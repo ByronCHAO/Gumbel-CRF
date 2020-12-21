@@ -39,7 +39,7 @@ class LatentTemplateCRFARModel(FTModel):
   def train_step(self, batch, n_iter, ei, bi, schedule_params):
     model = self.model
 
-    if(self.dataset == 'e2e'):
+    if(self.dataset.startswith('e2e')):
       sentences = torch.from_numpy(batch['sent_dlex']).to(self.device)
     elif(self.dataset == 'mscoco'):
       sentences = torch.from_numpy(batch['sentences']).to(self.device)

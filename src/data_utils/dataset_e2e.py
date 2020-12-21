@@ -133,7 +133,7 @@ class DatasetE2E(DatasetBase):
     super(DatasetE2E, self).__init__()
     self.model_name = config.model_name
     self.task = config.task
-    self.data_path = config.data_path['e2e']
+    self.data_path = config.data_path[config.dataset]
     self.word2id = config.word2id
     self.id2word = config.id2word
     self.pad_id = config.pad_id

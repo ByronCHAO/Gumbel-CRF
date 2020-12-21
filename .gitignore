@@ -4,3 +4,4 @@
 log
 src/.mypy_cache
 src/.vscode
+*.pyc

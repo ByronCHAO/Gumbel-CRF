@@ -414,8 +414,8 @@ class LinearChainCRF(nn.Module):
       H[:, t+1, :] = torch.sum(
         w * (H[:, t, :].view(batch_size, num_class, 1) - log_w), dim=1)
     
-    last_alpha = tmu.gather_last(alpha, seq_lens)
-    H_last = tmu.gather_last(H, seq_lens)
+    last_alpha = tmu.batch_gather_last(alpha, seq_lens)
+    H_last = tmu.batch_gather_last(H, seq_lens)
     log_p_T = last_alpha - log_Z.view(batch_size, 1)
     p_T = log_p_T.exp()
 
