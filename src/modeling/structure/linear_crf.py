@@ -11,28 +11,97 @@
 import torch
 import copy
 
-import numpy as np 
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .. import torch_model_utils as tmu
+from libs.torch_struct import LinearChainCRF as _LinearChainCRF
+
+
+class LinearChainCRFNeo(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.label_size = config.latent_vocab_size
+    self.include_start_end_trans = False  # TODO config.include_start_end_trans
+    self.transition = nn.Parameter(torch.zeros(self.label_size, self.label_size))
+    self.start_scores = nn.Parameter(torch.zeros(self.label_size))
+    self.end_scores = nn.Parameter(torch.zeros(self.label_size))
+
+  def get_dist(self, emission_scores, seq_lens):
+    """Mix the transition and emission scores
+
+    Args:
+      emission_scores: torch.Tensor(float), 
+        size=[batch, max_len, num_class]
+
+    Returns:
+      scores: size=[batch, len, num_class, num_class]
+        scores := log phi(batch, x_t, y_{t-1}, y_t)
+    """
+
+    batch, N, C = emission_scores.shape
+    vals = emission_scores.view(batch, N, 1, C).repeat(1, 1, C, 1)
+    trans = self.transition.view(1, 1, C, C).repeat(batch, N, 1, 1)
+    # seq_len_to_mask use seq_len-1 because the last position, we only add end-transition
+    vals += trans * tmu.length_to_mask(seq_lens - 1, max(seq_lens)).view(batch, N, 1, 1)
+    batch_arange = torch.arange(batch)
+    vals[batch_arange, seq_lens - 1, 1:] = -1e12  # only one END state
+    if self.include_start_end_trans:
+      vals[:, 0] += self.start_scores.view(1, 1, -1)
+      vals[batch_arange, seq_lens - 1, 0] += self.end_scores.view(1, -1)
+    dist = _LinearChainCRF(vals, seq_lens + 1)
+    return dist
+
+  def log_prob(self, seq, emission_scores, seq_lens):
+    dist = self.get_dist(emission_scores, seq_lens)
+    return dist.log_prob(dist.to_event(seq))
+
+  def marginal(self, seq, emission_scores, seq_lens):
+    dist = self.get_dist(emission_scores, seq_lens)
+    return dist.marginals
+
+  def rsample(self, emission_scores, seq_lens, tau, return_switching=False, return_prob=False):
+    """Reparameterized CRF sampling"""
+    dist = self.get_dist(emission_scores, seq_lens)
+    # seed = torch.seed()
+    # torch.manual_seed(seed)
+    _orig = dist.gumbel_crf(tau)
+    relaxed_sample = _orig.sum(-2)
+    sample = relaxed_sample.argmax(-1)
+    # torch.manual_seed(seed)
+    # sample_check = dist.from_event(dist.gumbel_crf_st(tau))[0][:, :-1]
+    # assert (sample.cpu() == sample_check).all()  # why not pass. # TODO try fp64
+    # sample = relaxed_sample
+    ret = [sample, relaxed_sample]
+    if return_switching:
+      ret += [0]
+    if return_prob:
+      sample_log_prob_stepwise = None
+      sample_log_prob = dist.log_prob(
+          dist.to_event(torch.cat([sample, sample.new_zeros(sample.shape[0], 1)], dim=1), self.label_size))
+      ret += [sample_log_prob, sample_log_prob_stepwise]
+    return ret
+
+  def entropy(self, emission_scores, seq_lens):
+    dist = self.get_dist(emission_scores, seq_lens)
+    return dist.entropy
+
 
 class LinearChainCRF(nn.Module):
   """Implemention of the linear chain CRF, since we only need the forward, 
   relaxed sampling, and entropy here, we emit other inference algorithms like 
   forward backward, evaluation, and viterbi"""
-
   def __init__(self, config):
     super(LinearChainCRF, self).__init__()
     self.label_size = config.latent_vocab_size
 
-    init_transition = torch.randn(
-      self.label_size, self.label_size).to(config.device)
+    init_transition = torch.randn(self.label_size, self.label_size).to(config.device)
 
     # do not use any start or end index, assume that all links to start and end
-    # has potential 1 
+    # has potential 1
     self.transition = nn.Parameter(init_transition)
-    return 
+    return
 
   def calculate_all_scores(self, emission_scores):
     """Mix the transition and emission scores
@@ -77,7 +146,7 @@ class LinearChainCRF(nn.Module):
     seq_len = all_scores.size(1)
     alpha = torch.zeros(batch_size, seq_len, self.label_size).to(device)
 
-    # the first position of all labels = 
+    # the first position of all labels =
     # (the transition from start - > all labels) + current emission.
     alpha[:, 0, :] = emission_scores[:, 0, :]
 
@@ -149,17 +218,17 @@ class LinearChainCRF(nn.Module):
     batch_size = seq.size(0)
     alpha, log_Z = self.forward_score(emission_scores, seq_lens)
     score = torch.zeros(batch_size, max_len).to(device)
-    
+
     for i in range(max_len):
-      if(i == 0):
+      if (i == 0):
         score[:, i] += tmu.batch_index_select(
-          emission_scores[:, 0], # [batch, num_class]
-          seq[:, 0]) # [batch]
-      else: 
+            emission_scores[:, 0],  # [batch, num_class]
+            seq[:, 0])  # [batch]
+      else:
         transition_ = self.transition.view(1, self.label_size, self.label_size)
         transition_ = transition_.repeat(batch_size, 1, 1)
-        prev_ind = seq[:, i - 1] # [batch] 
-        current_ind = seq[:, i] # [batch]
+        prev_ind = seq[:, i - 1]  # [batch]
+        current_ind = seq[:, i]  # [batch]
         # select prev index
         transition_ = tmu.batch_index_select(transition_, prev_ind)
         # select current index
@@ -220,16 +289,16 @@ class LinearChainCRF(nn.Module):
     seq_len = all_scores.size(1)
 
     s = torch.zeros(batch_size, seq_len, self.label_size).to(device)
-    s[:, 0] = emission_scores[:, 0] 
+    s[:, 0] = emission_scores[:, 0]
 
     # [B, T, from C, to C]
     bp = torch.zeros(batch_size, seq_len, self.label_size, self.label_size)
     bp = bp.to(device)
-    
+
     # forward viterbi
     for t in range(1, seq_len):
-      s_ = s[:, t - 1].unsqueeze(2) + all_scores[:, t] # [B, from C, to C]
-      s[:, t] = s_.max(dim=1)[0] # [B, C]
+      s_ = s[:, t - 1].unsqueeze(2) + all_scores[:, t]  # [B, from C, to C]
+      s[:, t] = s_.max(dim=1)[0]  # [B, C]
       bp[:, t] = torch.softmax(s_ / tau, dim=1)
 
     # backtracking
@@ -238,11 +307,10 @@ class LinearChainCRF(nn.Module):
     y = torch.zeros(batch_size, seq_len, self.label_size).to(device)
     y[:, 0] = torch.softmax(s[:, 0] / tau, dim=1)
     for t in range(1, seq_len):
-      y_ = y[:, t-1].argmax(dim=1) # [B]
+      y_ = y[:, t - 1].argmax(dim=1)  # [B]
       y[:, t] = tmu.batch_index_select(
-        bp[:, t-1].transpose(1, 2), # [B, to C, from C]
-        y_ 
-        )
+          bp[:, t - 1].transpose(1, 2),  # [B, to C, from C]
+          y_)
     y = tmu.reverse_sequence(y, seq_lens)
     y_hard = y.argmax(dim=2)
     return y_hard, y
@@ -269,17 +337,17 @@ class LinearChainCRF(nn.Module):
     seq_len = all_scores.size(1)
 
     s = torch.zeros(batch_size, seq_len, self.label_size).to(device)
-    s[:, 0] = emission_scores[:, 0] 
+    s[:, 0] = emission_scores[:, 0]
     s[:, 0] += tmu.sample_gumbel(emission_scores[:, 0].size()).to(device)
 
     # [B, T, from C, to C]
     bp = torch.zeros(batch_size, seq_len, self.label_size, self.label_size)
     bp = bp.to(device)
-    
+
     # forward viterbi
     for t in range(1, seq_len):
-      s_ = s[:, t - 1].unsqueeze(2) + all_scores[:, t] # [B, from C, to C]
-      s[:, t] = s_.max(dim=1)[0] # [B, C]
+      s_ = s[:, t - 1].unsqueeze(2) + all_scores[:, t]  # [B, from C, to C]
+      s[:, t] = s_.max(dim=1)[0]  # [B, C]
       bp[:, t] = torch.softmax(s_ / tau, dim=1)
 
     # backtracking
@@ -288,16 +356,15 @@ class LinearChainCRF(nn.Module):
     y = torch.zeros(batch_size, seq_len, self.label_size).to(device)
     y[:, 0] = torch.softmax(s[:, 0] / tau, dim=1)
     for t in range(1, seq_len):
-      y_ = y[:, t-1].argmax(dim=1) # [B]
+      y_ = y[:, t - 1].argmax(dim=1)  # [B]
       y[:, t] = tmu.batch_index_select(
-        bp[:, t-1].transpose(1, 2), # [B, to C, from C]
-        y_ )
+          bp[:, t - 1].transpose(1, 2),  # [B, to C, from C]
+          y_)
     y = tmu.reverse_sequence(y, seq_lens)
     y_hard = y.argmax(dim=2)
     return y_hard, y
 
-  def rsample(self, emission_scores, seq_lens, tau, 
-    return_switching=False, return_prob=False):
+  def rsample(self, emission_scores, seq_lens, tau, return_switching=False, return_prob=False):
     """Reparameterized CRF sampling, a Gumbelized version of the 
     Forward-Filtering Backward-Sampling algorithm
 
@@ -316,7 +383,7 @@ class LinearChainCRF(nn.Module):
     """
     # Algo 2 line 1
     all_scores = self.calculate_all_scores(emission_scores)
-    alpha, log_Z = self.forward_score(emission_scores, seq_lens) 
+    alpha, log_Z = self.forward_score(emission_scores, seq_lens)
 
     batch_size = emission_scores.size(0)
     max_len = emission_scores.size(1)
@@ -325,13 +392,13 @@ class LinearChainCRF(nn.Module):
 
     # Backward sampling start
     # The sampling still goes backward, but for simple implementation we
-    # reverse the sequence, so in the code it still goes from 1 to T 
+    # reverse the sequence, so in the code it still goes from 1 to T
     relaxed_sample_rev = torch.zeros(batch_size, max_len, num_class).to(device)
     sample_prob = torch.zeros(batch_size, max_len).to(device)
     sample_rev = torch.zeros(batch_size, max_len).type(torch.long).to(device)
     alpha_rev = tmu.reverse_sequence(alpha, seq_lens).to(device)
     all_scores_rev = tmu.reverse_sequence(all_scores, seq_lens).to(device)
-    
+
     # Algo 2 line 3, log space
     # w.shape=[batch, num_class]
     w = alpha_rev[:, 0, :].clone()
@@ -340,9 +407,9 @@ class LinearChainCRF(nn.Module):
     # switching regularization for longer chunk, not mentioned in the paper
     # so do no need to care. In the future this will be updated with posterior
     # regularization
-    if(return_switching): 
+    if (return_switching):
       switching = 0.
-    
+
     # Algo 2 line 4
     relaxed_sample_rev[:, 0] = tmu.reparameterize_gumbel(w, tau)
     # Algo 2 line 5
@@ -353,14 +420,14 @@ class LinearChainCRF(nn.Module):
     for i in range(1, max_len):
       # y_after_to_current[j, k] = log_potential(y_{t - 1} = k, y_t = j, x_t)
       # size=[batch, num_class, num_class]
-      y_after_to_current = all_scores_rev[:, i-1].transpose(1, 2)
+      y_after_to_current = all_scores_rev[:, i - 1].transpose(1, 2)
       # w.size=[batch, num_class]
-      w = tmu.batch_index_select(y_after_to_current, sample_rev[:, i-1])
-      w_base = tmu.batch_index_select(alpha_rev[:, i-1], sample_rev[:, i-1])
+      w = tmu.batch_index_select(y_after_to_current, sample_rev[:, i - 1])
+      w_base = tmu.batch_index_select(alpha_rev[:, i - 1], sample_rev[:, i - 1])
       # Algo 2 line 7, log space
       w = w + alpha_rev[:, i] - w_base.view(batch_size, 1)
-      p = F.softmax(w, dim=-1) # p correspond to pi in the paper
-      if(return_switching):
+      p = F.softmax(w, dim=-1)  # p correspond to pi in the paper
+      if (return_switching):
         switching += (tmu.js_divergence(p, prev_p) * mask[:, i]).sum()
       prev_p = p
       # Algo 2 line 8
@@ -378,10 +445,10 @@ class LinearChainCRF(nn.Module):
     sample_log_prob = sample_log_prob_stepwise.sum(dim=1)
 
     ret = [sample, relaxed_sample]
-    if(return_switching): 
+    if (return_switching):
       switching /= (mask.sum(dim=-1) - 1).sum()
       ret.append(switching)
-    if(return_prob):
+    if (return_prob):
       ret.extend([sample_log_prob, sample_log_prob_stepwise])
     return ret
 
@@ -411,14 +478,13 @@ class LinearChainCRF(nn.Module):
         alpha[:, t, :].view(batch_size, num_class, 1) -\
         alpha[:, t+1, :].view(batch_size, 1, num_class)
       w = log_w.exp()
-      H[:, t+1, :] = torch.sum(
-        w * (H[:, t, :].view(batch_size, num_class, 1) - log_w), dim=1)
-    
+      H[:, t + 1, :] = torch.sum(w * (H[:, t, :].view(batch_size, num_class, 1) - log_w), dim=1)
+
     last_alpha = tmu.batch_gather_last(alpha, seq_lens)
     H_last = tmu.batch_gather_last(H, seq_lens)
     log_p_T = last_alpha - log_Z.view(batch_size, 1)
     p_T = log_p_T.exp()
 
     H_total = p_T * (H_last - log_p_T)
-    H_total = H_total.sum(dim = -1)
+    H_total = H_total.sum(dim=-1)
     return H_total

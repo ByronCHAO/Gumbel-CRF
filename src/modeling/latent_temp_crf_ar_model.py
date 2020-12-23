@@ -5,7 +5,7 @@ from torch import nn
 from torch.optim import Adam, SGD, RMSprop
 from torch.nn.utils.clip_grad import clip_grad_norm_
 
-from .latent_temp_crf_ar import LatentTemplateCRFAR
+from .latent_temp_crf_ar_debug import LatentTemplateCRFAR
 from .ftmodel import FTModel
 
 class LatentTemplateCRFARModel(FTModel):
@@ -90,7 +90,7 @@ class LatentTemplateCRFARModel(FTModel):
 
     model = self.model
 
-    if(self.task == 'density' and self.dataset == 'e2e'):
+    if(self.task == 'density' and self.dataset.startswith('e2e')):
       batch_c, batch = batch
     else:
       batch_c = batch
@@ -99,7 +99,7 @@ class LatentTemplateCRFARModel(FTModel):
       out_dict = {}
 
       if(self.task == 'density'): # likelihood evaluation
-        if(self.dataset == 'e2e'):
+        if(self.dataset.startswith('e2e')):
           sentences = torch.from_numpy(batch_c['sent_dlex']).to(self.device)
         elif(self.dataset == 'mscoco'):
           sentences = torch.from_numpy(batch_c['sentences']).to(self.device)
