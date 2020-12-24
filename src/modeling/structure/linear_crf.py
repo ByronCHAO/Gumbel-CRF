@@ -64,15 +64,9 @@ class LinearChainCRFNeo(nn.Module):
   def rsample(self, emission_scores, seq_lens, tau, return_switching=False, return_prob=False):
     """Reparameterized CRF sampling"""
     dist = self.get_dist(emission_scores, seq_lens)
-    # seed = torch.seed()
-    # torch.manual_seed(seed)
     _orig = dist.gumbel_crf(tau)
     relaxed_sample = _orig.sum(-2)
     sample = relaxed_sample.argmax(-1)
-    # torch.manual_seed(seed)
-    # sample_check = dist.from_event(dist.gumbel_crf_st(tau))[0][:, :-1]
-    # assert (sample.cpu() == sample_check).all()  # why not pass. # TODO try fp64
-    # sample = relaxed_sample
     ret = [sample, relaxed_sample]
     if return_switching:
       ret += [0]

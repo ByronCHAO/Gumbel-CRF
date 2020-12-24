@@ -1,8 +1,8 @@
 """Latent template CRF, autoregressive version"""
 
-import numpy as np
+import numpy as np 
 
-import torch
+import torch 
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -10,7 +10,7 @@ from torch.distributions import Uniform
 
 from .lstm_seq2seq.encoder import LSTMEncoder
 from .lstm_seq2seq.decoder import LSTMDecoder, Attention
-from .structure.linear_crf import LinearChainCRFNeo, LinearChainCRF
+from .structure.linear_crf import LinearChainCRF
 from . import torch_model_utils as tmu
 
 class LatentTemplateCRFAR(nn.Module):
@@ -41,7 +41,7 @@ class LatentTemplateCRFAR(nn.Module):
     self.seg_id = config.seg_id
 
     self.vocab_size = config.vocab_size
-    self.latent_vocab_size = config.latent_vocab_size
+    self.latent_vocab_size = config.latent_vocab_size 
 
     self.lstm_layers = config.lstm_layers
     self.embedding_size = config.embedding_size
@@ -55,33 +55,29 @@ class LatentTemplateCRFAR(nn.Module):
     ## Model parameters
     # emb
     self.embeddings = nn.Embedding(config.vocab_size, config.embedding_size)
-    if(embeddings is not None):
+    if(embeddings is not None): 
       self.embeddings.weight.data.copy_(torch.from_numpy(embeddings))
     self.z_embeddings = nn.Embedding(
       config.latent_vocab_size, config.embedding_size)
     # enc
     self.q_encoder = LSTMEncoder(config)
-    # latent
+    # latent 
     self.z_crf_proj = nn.Linear(config.state_size, config.latent_vocab_size)
-    self.z_crf = LinearChainCRFNeo(config)
-    # self.z_crf_origin = LinearChainCRF(config)
-    # dec
+    self.z_crf = LinearChainCRF(config)
+    # dec 
     self.p_dec_init_state_proj_h = nn.Linear(
       config.embedding_size, config.lstm_layers * config.state_size)
     self.p_dec_init_state_proj_c = nn.Linear(
       config.embedding_size, config.lstm_layers * config.state_size)
     self.p_decoder = LSTMDecoder(config)
-    # copy
+    # copy 
     self.p_copy_attn = Attention(
       config.state_size, config.state_size, config.state_size)
     self.p_copy_g = nn.Linear(config.state_size, 1)
     # dec z proj
     self.p_z_proj = nn.Linear(config.state_size, config.latent_vocab_size)
     self.p_z_intermediate = nn.Linear(2 * config.state_size, config.state_size)
-    return
-
-  def sync(self):
-    self.z_crf_origin.transition.data = self.z_crf.transition.data.T.clone()
+    return 
 
   def init_state(self, s):
     """initialize decoder state
@@ -107,7 +103,7 @@ class LatentTemplateCRFAR(nn.Module):
       keys: size=[batch, max_mem_len]
       vals: size=[batch, max_mem_len]
     """
-    kv_mask = keys != self.pad_id
+    kv_mask = keys != self.pad_id 
     keys_emb = self.embeddings(keys)
     vals_emb = self.embeddings(vals)
     kv_emb = keys_emb + vals_emb # [batch, mem_len, state_size]
@@ -118,7 +114,7 @@ class LatentTemplateCRFAR(nn.Module):
     kv_enc = kv_enc.sum(dim=1) / kv_mask_.sum(dim=1, keepdim=True)
     return kv_emb, kv_enc, kv_mask
 
-  def forward(self, keys, vals,
+  def forward(self, keys, vals, 
     sentences, sent_lens, tau, x_lambd, return_grad=False):
     """Forward pass, first run the inference network, then run the decoder
     
@@ -136,14 +132,13 @@ class LatentTemplateCRFAR(nn.Module):
       out_dict: dict(), output dict  
       out_dict['inspect']: dict(), training process inspection
     """
-    self.sync()
     out_dict = {}
     inspect = {}
     batch_size = sentences.size(0)
     device = sentences.device
     loss = 0.
 
-    ## sentence encoding
+    ## sentence encoding 
     sent_mask = sentences != self.pad_id
     sentences_emb = self.embeddings(sentences)
     # enc_outputs.shape = [batch, max_len, state_size]
@@ -153,21 +148,19 @@ class LatentTemplateCRFAR(nn.Module):
     max_len = enc_outputs.size(1)
     sent_mask = sent_mask[:, : max_len]
 
-    # kv encoding
+    # kv encoding 
     kv_emb, kv_enc, kv_mask = self.encode_kv(keys, vals)
 
     ## latent template
     # emission score = log potential
     # [batch, max_len, latent_vocab]
-    z_emission_scores = self.z_crf_proj(enc_outputs)
+    z_emission_scores = self.z_crf_proj(enc_outputs) 
     if(self.z_overlap_logits):
       z_emission_scores[:, :-1] += z_emission_scores[:, 1:].clone()
       z_emission_scores[:, 1:] += z_emission_scores[:, :-1].clone()
 
     # entropy regularization
     ent_z = self.z_crf.entropy(z_emission_scores, sent_lens).mean()
-    # ent_z_origin = self.z_crf_origin.entropy(z_emission_scores, sent_lens).mean()
-    # assert torch.isclose(ent_z, ent_z_origin)
     loss += self.z_beta * ent_z
     out_dict['ent_z'] = tmu.to_np(ent_z)
     out_dict['ent_z_loss'] = self.z_beta * tmu.to_np(ent_z)
@@ -176,13 +169,7 @@ class LatentTemplateCRFAR(nn.Module):
     if(self.z_sample_method == 'gumbel_ffbs'):
       z_sample_ids, z_sample, _ = self.z_crf.rsample(
         z_emission_scores, sent_lens, tau, return_switching=True)
-
-      # z_sample_ids_origin, z_sample_origin, _ = self.z_crf_origin.rsample(
-      #   z_emission_scores, sent_lens, tau, return_switching=True)
-      # assert z_sample_ids.shape == z_sample_ids_origin.shape
-      # assert z_sample.shape == z_sample_origin.shape
     elif(self.z_sample_method == 'pm'):
-      raise NotImplementedError
       z_sample_ids, z_sample = self.z_crf.pmsample(
         z_emission_scores, sent_lens, tau)
     else:
@@ -194,8 +181,8 @@ class LatentTemplateCRFAR(nn.Module):
     inspect['z_sample_max'] = (z_sample_max.sum() / sent_mask.sum()).item()
     out_dict['z_sample_max'] = inspect['z_sample_max']
 
-    # NOTE: although we use 0 as mask here, 0 is ALSO a valid state
-    z_sample_ids.masked_fill_(~sent_mask, 0)
+    # NOTE: although we use 0 as mask here, 0 is ALSO a valid state 
+    z_sample_ids.masked_fill_(~sent_mask, 0) 
     z_sample_ids_out = z_sample_ids.masked_fill(~sent_mask, -1)
     out_dict['z_sample_ids'] = tmu.to_np(z_sample_ids_out)
     inspect['z_sample_ids'] = tmu.to_np(z_sample_ids_out)
@@ -229,13 +216,13 @@ class LatentTemplateCRFAR(nn.Module):
       out_dict['g_mean'] =\
         g_mean.abs().log().mean().item()
       out_dict['g_std'] = g_std.log().mean().item()
-      out_dict['g_r'] = g_r.mean().item()
+      out_dict['g_r'] = g_r.mean().item()   
 
     out_dict['loss'] = tmu.to_np(loss)
     out_dict['inspect'] = inspect
     return loss, out_dict
-
-  def forward_score_func(self, keys, vals,
+  
+  def forward_score_func(self, keys, vals, 
     sentences, sent_lens, x_lambd, num_sample, return_grad=False):
     """Forward pass with score function estimator
     
@@ -259,7 +246,7 @@ class LatentTemplateCRFAR(nn.Module):
     device = sentences.device
     loss = 0.
 
-    ## sentence encoding
+    ## sentence encoding 
     sent_mask = sentences != self.pad_id
     sentences_emb = self.embeddings(sentences)
     # enc_outputs.shape = [batch, max_len, state_size]
@@ -269,13 +256,13 @@ class LatentTemplateCRFAR(nn.Module):
     max_len = enc_outputs.size(1)
     sent_mask = sent_mask[:, : max_len]
 
-    # kv encoding
+    # kv encoding 
     kv_emb, kv_enc, kv_mask = self.encode_kv(keys, vals)
 
     ## latent template
     # emission score = log potential
     # [batch, max_len, latent_vocab]
-    z_emission_scores = self.z_crf_proj(enc_outputs)
+    z_emission_scores = self.z_crf_proj(enc_outputs) 
     if(self.z_overlap_logits):
       z_emission_scores[:, :-1] += z_emission_scores[:, 1:].clone()
       z_emission_scores[:, 1:] += z_emission_scores[:, :-1].clone()
@@ -290,7 +277,7 @@ class LatentTemplateCRFAR(nn.Module):
     z_emission_scores = tmu.batch_repeat(z_emission_scores, num_sample)
     sent_lens = tmu.batch_repeat(sent_lens, num_sample)
     z_sample_ids, z_sample, _, z_log_prob, z_transition = self.z_crf.rsample(
-      z_emission_scores, sent_lens,
+      z_emission_scores, sent_lens, 
       tau=0.01, return_switching=True, return_prob=True)
     z_transition = z_transition.view(batch_size, num_sample, -1)
 
@@ -302,8 +289,8 @@ class LatentTemplateCRFAR(nn.Module):
     inspect['z_sample_max'] = (z_sample_max.sum() / sent_mask.sum()).item()
     out_dict['z_sample_max'] = inspect['z_sample_max']
 
-    # NOTE: although we use 0 as mask here, 0 is ALSO a valid state
-    z_sample_ids.masked_fill_(~sent_mask, 0)
+    # NOTE: although we use 0 as mask here, 0 is ALSO a valid state 
+    z_sample_ids.masked_fill_(~sent_mask, 0) 
     z_sample_ids_out = z_sample_ids.masked_fill(~sent_mask, -1)\
       .view(batch_size, num_sample, -1)
     inspect['z_sample_ids'] = tmu.to_np(z_sample_ids_out[:, 0])
@@ -319,7 +306,7 @@ class LatentTemplateCRFAR(nn.Module):
     kv_emb = tmu.batch_repeat(kv_emb, num_sample)
     kv_enc = tmu.batch_repeat(kv_enc, num_sample)
     kv_mask = tmu.batch_repeat(kv_mask, num_sample)
-    (p_log_prob, p_log_prob_casewise, p_log_prob_x, p_log_prob_z,
+    (p_log_prob, p_log_prob_casewise, p_log_prob_x, p_log_prob_z, 
       z_acc, p_log_prob_stepwise) = self.decode_train(
         z_sample_ids, z_sample_emb, sent_lens,
         keys, kv_emb, kv_enc, kv_mask, sentences, x_lambd)
@@ -340,11 +327,11 @@ class LatentTemplateCRFAR(nn.Module):
       out_dict['reward'] = reward_seq.item()
       learning_signal_seq =\
         (p_log_prob_casewise - b - self.z_b0).detach() * z_log_prob
-      learning_signal = self.z_lambd * learning_signal_seq.mean()
+      learning_signal = self.z_lambd * learning_signal_seq.mean() 
       out_dict['learning_signal'] = learning_signal.item()
     elif(self.reward_level == 'step'):
       max_len = max_len - 1
-      # Stepwise reward, unbiased transition version
+      # Stepwise reward, unbiased transition version 
       p_log_prob_stepcum = p_log_prob_stepwise.view(batch_size, num_sample, 1, -1)
       p_log_prob_stepcum = p_log_prob_stepcum.repeat(1, 1, max_len, 1)
       cum_mask = torch.triu(torch.ones(max_len, max_len)).to(device)
@@ -352,7 +339,7 @@ class LatentTemplateCRFAR(nn.Module):
         batch_size, num_sample, max_len + 1, 1)[:,:,:-1,:]
       cum_mask = cum_mask.view(1, 1, max_len, max_len) * sent_mask_.float()
       p_log_prob_stepcum = (p_log_prob_stepcum * cum_mask).sum(-1)
-      # NOTE: does this baseline make sense?
+      # NOTE: does this baseline make sense? 
       b = p_log_prob_stepcum.detach()
       b = (b.sum(dim=1, keepdim=True) - b) / (num_sample - 1)
       learning_signal_step_ut =\
@@ -362,10 +349,10 @@ class LatentTemplateCRFAR(nn.Module):
       learning_signal_step_ut = self.z_lambd * learning_signal_step_ut.mean()
       out_dict['learning_signal'] = learning_signal_step_ut.item()
       learning_signal = learning_signal_step_ut
-    else:
+    else: 
       raise NotImplementedError(
         'reward level %s not implemented' % self.reward_level)
-
+      
     loss += learning_signal
 
     # turn maximization to minimization
@@ -384,7 +371,7 @@ class LatentTemplateCRFAR(nn.Module):
       out_dict['g_mean'] =\
         g_mean.abs().log().mean().item()
       out_dict['g_std'] = g_std.log().mean().item()
-      out_dict['g_r'] = g_r.mean().item()
+      out_dict['g_r'] = g_r.mean().item()   
 
     out_dict['loss'] = tmu.to_np(loss)
     out_dict['inspect'] = inspect
@@ -422,7 +409,7 @@ class LatentTemplateCRFAR(nn.Module):
     out_dict['marginal'] = nll.item()
     return loss, out_dict
 
-  def infer_marginal(self, keys, vals,
+  def infer_marginal(self, keys, vals, 
     sentences, sent_lens, num_sample):
     """Marginal probability and ELBO 
     Via importance sampling from the inference network
@@ -443,7 +430,7 @@ class LatentTemplateCRFAR(nn.Module):
     device = sentences.device
     loss = 0.
 
-    ## sentence encoding
+    ## sentence encoding 
     sent_mask = sentences != self.pad_id
     sentences_emb = self.embeddings(sentences)
     # enc_outputs.shape = [batch, max_len, state_size]
@@ -453,13 +440,13 @@ class LatentTemplateCRFAR(nn.Module):
     max_len = enc_outputs.size(1)
     sent_mask = sent_mask[:, : max_len]
 
-    # kv encoding
+    # kv encoding 
     kv_emb, kv_enc, kv_mask = self.encode_kv(keys, vals)
 
     ## latent template
     # emission score = log potential
     # [batch, max_len, latent_vocab]
-    z_emission_scores = self.z_crf_proj(enc_outputs)
+    z_emission_scores = self.z_crf_proj(enc_outputs) 
     if(self.z_overlap_logits):
       z_emission_scores[:, :-1] += z_emission_scores[:, 1:].clone()
       z_emission_scores[:, 1:] += z_emission_scores[:, :-1].clone()
@@ -474,7 +461,7 @@ class LatentTemplateCRFAR(nn.Module):
     z_sample_ids, z_sample, z_sample_log_prob, _ = self.z_crf.rsample(
       z_emission_scores, sent_lens, tau=0.01,
       return_switching=False, return_prob=True)
-    z_sample_emb = tmu.seq_gumbel_encode(z_sample, z_sample_ids,
+    z_sample_emb = tmu.seq_gumbel_encode(z_sample, z_sample_ids, 
       self.z_embeddings, gumbel_st=True)
 
     # decoding
@@ -491,8 +478,8 @@ class LatentTemplateCRFAR(nn.Module):
     out_dict['p_log_prob_x'] = p_log_prob_x.item()
     out_dict['p_log_prob_z'] = p_log_prob_z.item()
     out_dict['z_acc'] = z_acc.item()
-
-    # elbo
+    
+    # elbo 
     elbo = (p_log_prob_casewise - z_sample_log_prob).mean()
     out_dict['elbo'] = elbo.item()
 
@@ -510,7 +497,7 @@ class LatentTemplateCRFAR(nn.Module):
     return out_dict
 
 
-  def prepare_dec_io(self,
+  def prepare_dec_io(self, 
     z_sample_ids, z_sample_emb, sentences, x_lambd):
     """Prepare the decoder output g based on the inferred z from the CRF 
 
@@ -541,7 +528,7 @@ class LatentTemplateCRFAR(nn.Module):
     dec_targets_z = z_sample_ids[:, 1:]
     return dec_inputs, dec_targets_x, dec_targets_z
 
-  def decode_train(self,
+  def decode_train(self, 
     z_sample_ids, z_sample_emb, sent_lens,
     mem, mem_emb, mem_enc, mem_mask, sentences, x_lambd):
     """Train the decoder/ generative model. Same as 
@@ -579,7 +566,7 @@ class LatentTemplateCRFAR(nn.Module):
     dec_cell = self.p_decoder
     if(self.use_src_info):
       state = self.init_state(mem_enc)
-    else:
+    else: 
       state = self.init_state(mem_enc)
       state = [(state[0] * 0).detach(), (state[1] * 0).detach()]
 
@@ -590,29 +577,29 @@ class LatentTemplateCRFAR(nn.Module):
 
     log_prob_x, log_prob_z, dec_outputs, z_pred = [], [], [], []
 
-    for i in range(max_len):
+    for i in range(max_len): 
       if(self.use_src_info):
         dec_out, state = dec_cell(
           dec_inputs[i], state, mem_emb, mem_mask)
-      else:
+      else: 
         dec_out, state = dec_cell(
           dec_inputs[i], state)
       dec_out = dec_out[0]
 
-      # predict z
+      # predict z 
       z_logits = self.p_z_proj(dec_out)
       z_pred.append(z_logits.argmax(dim=-1))
       log_prob_z_i = -F.cross_entropy(
         z_logits, dec_targets_z[i], reduction='none')
       log_prob_z.append(log_prob_z_i)
 
-      # predict x based on z
+      # predict x based on z 
       dec_intermediate = self.p_z_intermediate(
         torch.cat([dec_out, z_sample_emb[i]], dim=1))
       x_logits = dec_cell.output_proj(dec_intermediate)
       lm_prob = F.softmax(x_logits, dim=-1)
 
-      if(self.use_copy):
+      if(self.use_copy): 
         _, copy_dist = self.p_copy_attn(dec_intermediate, mem_emb, mem_mask)
         copy_prob = tmu.batch_index_put(copy_dist, mem, self.vocab_size)
         copy_g = torch.sigmoid(self.p_copy_g(dec_intermediate))
@@ -623,7 +610,7 @@ class LatentTemplateCRFAR(nn.Module):
       log_prob_x_i = -F.cross_entropy(
         x_logits, dec_targets_x[i], reduction='none')
       log_prob_x.append(log_prob_x_i)
-
+      
       dec_outputs.append(x_logits.argmax(dim=-1))
 
     # loss
@@ -640,12 +627,12 @@ class LatentTemplateCRFAR(nn.Module):
     log_prob_casewise = log_prob_x_casewise + log_prob_z_casewise
     log_prob = log_prob_x + log_prob_z
 
-    # acc
+    # acc 
     z_pred = torch.stack(z_pred).transpose(1, 0) # [B, T]
     dec_targets_z = dec_targets_z.transpose(1, 0)
-    z_positive = tmu.mask_by_length(z_pred == dec_targets_z, sent_lens).sum()
+    z_positive = tmu.mask_by_length(z_pred == dec_targets_z, sent_lens).sum() 
     z_acc = z_positive / sent_lens.sum()
-
+    
     return (
       log_prob, log_prob_casewise, log_prob_x, log_prob_z, z_acc, log_prob_step)
 
@@ -667,10 +654,10 @@ class LatentTemplateCRFAR(nn.Module):
     state_size = self.state_size
     device = keys.device
 
-    # kv encoding
+    # kv encoding 
     kv_emb, kv_enc, kv_mask = self.encode_kv(keys, vals)
 
-    # decoding
+    # decoding 
     predictions_x, predictions_z = self.decode_infer(vals, kv_emb, kv_enc, kv_mask)
     out_dict['predictions'] = tmu.to_np(predictions_x)
     out_dict['predictions_z'] = tmu.to_np(predictions_z)
@@ -691,7 +678,7 @@ class LatentTemplateCRFAR(nn.Module):
       predictions_x: torch.Tensor(int), size=[batch, max_dec_len]
       predictions_z: torch.Tensor(int), size=[batch, max_dec_len]
     """
-
+    
     batch_size = mem.size(0)
     device = mem.device
 
@@ -702,12 +689,12 @@ class LatentTemplateCRFAR(nn.Module):
       torch.zeros(batch_size).to(device).long() + self.start_id)
     # assume use_src_info=True
     state = self.init_state(mem_enc)
-    for i in range(self.max_dec_len):
+    for i in range(self.max_dec_len): 
       # assume use_src_info=True
       dec_out, state = dec_cell(inp, state, mem_emb, mem_mask)
       dec_out = dec_out[0]
 
-      # predict z
+      # predict z 
       z_logits = self.p_z_proj(dec_out)
       if(self.z_pred_strategy == 'greedy'):
         z = z_logits.argmax(-1)
@@ -716,7 +703,7 @@ class LatentTemplateCRFAR(nn.Module):
       else: raise NotImplementedError(
         'Error z decode strategy %s' % self.z_pred_strategy)
 
-      # predict x based on z
+      # predict x based on z 
       z_emb = self.z_embeddings(z)
       dec_intermediate = self.p_z_intermediate(
         torch.cat([dec_out, z_emb], dim=1))

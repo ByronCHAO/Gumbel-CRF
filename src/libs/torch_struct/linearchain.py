@@ -40,8 +40,8 @@ class LinearChain(_Struct):
         return edge, batch, N, C, lengths
 
     def _dp(self, log_potentials, lengths=None, force_grad=False, cache=True):
-        # return self._dp_standard(log_potentials, lengths, force_grad)
-        return self._dp_scan(log_potentials, lengths, force_grad)
+        return self._dp_standard(log_potentials, lengths, force_grad)
+        #return self._dp_scan(log_potentials, lengths, force_grad)
 
     def _dp_scan(self, log_potentials, lengths=None, force_grad=False):
         "Compute forward pass by linear scan"

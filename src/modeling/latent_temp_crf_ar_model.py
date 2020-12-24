@@ -5,7 +5,7 @@ from torch import nn
 from torch.optim import Adam, SGD, RMSprop
 from torch.nn.utils.clip_grad import clip_grad_norm_
 
-from .latent_temp_crf_ar_debug import LatentTemplateCRFAR
+from .latent_temp_crf_ar import LatentTemplateCRFAR
 from .ftmodel import FTModel
 
 class LatentTemplateCRFARModel(FTModel):
