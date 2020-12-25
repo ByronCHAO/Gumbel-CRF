@@ -65,7 +65,7 @@ class LinearChainCRFNeo(nn.Module):
     """Reparameterized CRF sampling"""
     dist = self.get_dist(emission_scores, seq_lens)
     _orig = dist.gumbel_crf(tau)
-    relaxed_sample = _orig.sum(-2)
+    relaxed_sample = _orig.max(-2)[0] # SHould we use semiring instead of max directly?
     sample = relaxed_sample.argmax(-1)
     ret = [sample, relaxed_sample]
     if return_switching:
